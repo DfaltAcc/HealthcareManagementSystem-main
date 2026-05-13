@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat - SymCheck AI</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f0f2f5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: #1a5f7a;
+            color: white;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 20px;
+            width: 100%;
+        }
+        .messages-wrapper {
+            max-width: 800px;
+            margin: 0 auto;
+            width: 100%;
+        }
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+        }
+        .message.user { justify-content: flex-end; }
+        .message.bot { justify-content: flex-start; }
+        .bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            word-wrap: break-word;
+        }
+        .user .bubble {
+            background: #1a5f7a;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .bot .bubble {
+            background: white;
+            color: #333;
+            border: 1px solid #ddd;
+            border-bottom-left-radius: 4px;
+        }
+        .input-area {
+            border-top: 1px solid #ddd;
+            background: white;
+            padding: 20px;
+            display: flex;
+            gap: 10px;
+            width: 100%;
+        }
+        .input-wrapper {
+            max-width: 800px;
+            margin: 0 auto;
+            width: 100%;
+            display: flex;
+            gap: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 25px;
+        }
+        button {
+            background: #1a5f7a;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+        }
+        .disclaimer {
+            background: #fff3cd;
+            padding: 10px;
+            text-align: center;
+            font-size: 0.75rem;
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>🩺 SymCheck AI</h2>
+        <a href="/dashboard" style="color: white;">Dashboard</a>
+    </div>
+    
+    <input type="hidden" id="sessionId" value="{{ session_id }}">
+    <div class="chat-container" id="chatContainer">
+        <div class="messages-wrapper" id="messagesWrapper">
+            <div class="message bot">
+                <div class="bubble">
+                    Hello! Describe your symptoms and I'll help assess them.<br><br>
+                    ⚠️ NOT MEDICAL ADVICE. Always consult a doctor.
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="input-area">
+        <div class="input-wrapper">
+            <input type="text" id="messageInput" placeholder="Describe your symptoms..." onkeypress="if(event.key==='Enter') sendMessage()">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+    
+    <div class="disclaimer">
+        ⚠️ NOT MEDICAL ADVICE - For informational purposes only
+    </div>
+    
+    <script>
+        const sessionId = '{{ session_id }}';
+        let assessmentComplete = false;
+        
+        async function sendMessage() {
+            if (assessmentComplete) {
+                addMessage("This assessment is complete. Please start a new assessment for new symptoms.", 'bot');
+                return;
+            }
+            
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            addMessage(message, 'user');
+            input.value = '';
+            showTyping();
+            
+            try {
+                const response = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ message: message, session_id: sessionId })
+                });
+                const data = await response.json();
+                removeTyping();
+                addMessage(data.response, 'bot');
+                
+                if (data.assessment_ready) {
+                    addConfidenceBar(data.confidence, data.urgency);
+                    assessmentComplete = true;
+                    document.getElementById('messageInput').disabled = true;
+                    document.querySelector('.input-area button').disabled = true;
+                    document.querySelector('.input-area').style.opacity = '0.5';
+                }
+            } catch (error) {
+                removeTyping();
+                addMessage('Error processing request. Please try again.', 'bot');
+            }
+        }
+        
+        function addMessage(text, sender) {
+            const wrapper = document.getElementById('messagesWrapper');
+            const div = document.createElement('div');
+            div.className = `message ${sender}`;
+            let formattedText = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            formattedText = formattedText.replace(/•/g, '•');
+            formattedText = formattedText.replace(/\n/g, '<br>');
+            div.innerHTML = `<div class="bubble">${formattedText}</div>`;
+            wrapper.appendChild(div);
+            scrollToBottom();
+        }
+        
+        function addConfidenceBar(confidence, urgency) {
+            const wrapper = document.getElementById('messagesWrapper');
+            const urgencyColor = urgency === 'EMERGENCY' ? '#fee2e2' : (urgency === 'URGENT' ? '#ffedd5' : '#d1fae5');
+            const urgencyText = urgency === 'EMERGENCY' ? '🚨 EMERGENCY' : (urgency === 'URGENT' ? '⚠️ URGENT' : 'ℹ️ NON-URGENT');
+            
+            const confidenceDiv = document.createElement('div');
+            confidenceDiv.className = 'message bot';
+            confidenceDiv.innerHTML = `
+                <div class="bubble" style="background: ${urgencyColor}; width: 100%;">
+                    <strong>📊 Analysis Complete</strong><br>
+                    <div style="background: #ddd; border-radius: 10px; margin: 10px 0; height: 20px;">
+                        <div style="background: #1a5f7a; width: ${confidence}%; height: 20px; border-radius: 10px; text-align: center; color: white; font-size: 12px; line-height: 20px;">
+                            ${confidence}%
+                        </div>
+                    </div>
+                    <div><strong>${urgencyText}</strong></div>
+                    <small>⚠️ NOT MEDICAL ADVICE - Consult a doctor</small>
+                </div>
+            `;
+            wrapper.appendChild(confidenceDiv);
+            scrollToBottom();
+        }
+        
+        function showTyping() {
+            const wrapper = document.getElementById('messagesWrapper');
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'message bot';
+            typingDiv.id = 'typingIndicator';
+            typingDiv.innerHTML = '<div class="bubble">🤔 Analyzing symptoms...</div>';
+            wrapper.appendChild(typingDiv);
+            scrollToBottom();
+        }
+        
+        function removeTyping() {
+            const indicator = document.getElementById('typingIndicator');
+            if (indicator) indicator.remove();
+        }
+        
+        function scrollToBottom() {
+            const container = document.getElementById('chatContainer');
+            container.scrollTop = container.scrollHeight;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SymCheck AI - Medical Triage</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a5f7a 0%, #0d3b4a 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            max-width: 500px;
+            width: 100%;
+        }
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #1a5f7a;
+            margin-bottom: 10px;
+        }
+        .disclaimer {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 12px;
+            margin: 20px 0;
+            text-align: left;
+            font-size: 0.85rem;
+            color: #856404;
+        }
+        .btn {
+            display: inline-block;
+            background: #1a5f7a;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            margin: 5px;
+        }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid #1a5f7a;
+            color: #1a5f7a;
+        }
+        .links {
+            margin-top: 20px;
+        }
+        a {
+            color: #1a5f7a;
+            text-decoration: none;
+            margin: 0 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>🩺 SymCheck AI</h1>
+            <p>Intelligent Medical Triage Assistant</p>
+            
+            <div class="disclaimer">
+                ⚠️ <strong>NOT MEDICAL ADVICE</strong><br>
+                This AI does not replace a doctor. Always consult a healthcare professional.
+            </div>
+            
+            <div>
+                <a href="/login" class="btn">Login</a>
+                <a href="/register" class="btn btn-outline">Register</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

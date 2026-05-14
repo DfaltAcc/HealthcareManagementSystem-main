@@ -1,12 +1,13 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { LogOut, User } from 'lucide-react';
+import { LogOut, User, Bell, Power } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useMessageNotifications } from '../../context/MessageNotificationContext';
 import Button from '../ui/Button';
-import { Power } from 'lucide-react';
 
 const Navbar: React.FC = () => {
   const { user, isAuthenticated, logout } = useAuth();
+  const { unreadCount, markAllRead } = useMessageNotifications();
   const navigate = useNavigate();
 
   const handleLogout = () => {
@@ -43,6 +44,20 @@ const Navbar: React.FC = () => {
           <div className="flex items-center space-x-4">
             {isAuthenticated ? (
               <>
+                {/* Messages bell with unread badge */}
+                <button
+                  onClick={() => { markAllRead(); navigate('/messages'); }}
+                  className="relative p-2 rounded-full text-gray-500 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                  title={unreadCount > 0 ? `${unreadCount} unread message${unreadCount > 1 ? 's' : ''}` : 'Messages'}
+                >
+                  <Bell className="h-5 w-5" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] bg-red-500 text-white text-xs font-bold rounded-full flex items-center justify-center px-1 leading-none animate-pulse">
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
+                  )}
+                </button>
+
                 {/* User Avatar */}
                 <div className="flex items-center space-x-2">
                   {user?.avatar ? (

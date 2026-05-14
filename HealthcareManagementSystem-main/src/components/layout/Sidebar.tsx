@@ -17,7 +17,8 @@ import {
   UserCheck,
   Brain,
   BarChart2,
-  ClipboardList
+  ClipboardList,
+  Video
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -52,6 +53,7 @@ const Sidebar: React.FC = () => {
     // Common items for all roles
     { title: 'Appointments', icon: <Calendar className="w-5 h-5" />, path: '/appointments' },
     { title: 'Messages', icon: <MessageSquare className="w-5 h-5" />, path: '/messages' },
+    { title: 'Video Conference', icon: <Video className="w-5 h-5" />, path: '/video-conference' },
     { title: 'Prescriptions', icon: <Pill className="w-5 h-5" />, path: '/prescriptions' },
     
     // Medical Records - different pages for different roles

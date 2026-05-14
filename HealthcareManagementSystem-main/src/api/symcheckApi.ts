@@ -5,18 +5,26 @@ const API_BASE_URL = 'http://localhost:5000/api';
 export const analyzeSymptoms = async (
   message: string,
   sessionId: string,
-  userId: number
+  userId: number,
+  imageData?: string | null,       // base64 data URL (optional)
+  imageMimeType?: string | null    // e.g. 'image/jpeg'
 ): Promise<AnalyzeResponse> => {
   const response = await fetch(`${API_BASE_URL}/symcheck/analyze`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ message, sessionId, userId }),
+    body: JSON.stringify({
+      message,
+      sessionId,
+      userId,
+      ...(imageData ? { imageData, imageMimeType: imageMimeType ?? 'image/jpeg' } : {}),
+    }),
   });
 
   if (!response.ok) {
-    throw new Error('Failed to analyze symptoms');
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.message || 'Failed to analyze symptoms');
   }
   return response.json();
 };

@@ -32,21 +32,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('user');
-    console.log('🔍 Checking stored user on init:', storedUser);
+    const storedUser = sessionStorage.getItem('user');
     
     if (storedUser) {
       try {
         const parsedUser = JSON.parse(storedUser);
-        console.log('✅ Loaded user from storage:', parsedUser.email, parsedUser.role);
         parsedUser.permissions = DEFAULT_PERMISSIONS[parsedUser.role];
         setUser(parsedUser);
       } catch (error) {
         console.error('❌ Error parsing stored user:', error);
-        localStorage.removeItem('user');
+        sessionStorage.removeItem('user');
       }
-    } else {
-      console.log('📭 No stored user found');
     }
     setIsLoading(false);
   }, []);
@@ -103,7 +99,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       // Update state and storage
       setUser(data.user);
-      localStorage.setItem('user', JSON.stringify(data.user));
+      sessionStorage.setItem('user', JSON.stringify(data.user));
       
       // Get redirect route using the NEW user data (not the old state)
       const defaultRoute = getDefaultRoute(data.user);
@@ -197,7 +193,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       setUser(data.user);
-      localStorage.setItem('user', JSON.stringify(data.user));
+      sessionStorage.setItem('user', JSON.stringify(data.user));
 
       setIsLoading(false);
     } catch (err) {
@@ -236,7 +232,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     console.log('👋 Logging out user');
     setUser(null);
-    localStorage.removeItem('user');
+    sessionStorage.removeItem('user');
     window.location.href = '/signin';
   };
 

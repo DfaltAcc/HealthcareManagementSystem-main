@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Brain, Send, RefreshCw, AlertTriangle, CheckCircle, Plus } from 'lucide-react';
+import { Brain, Send, RefreshCw, AlertTriangle, CheckCircle, Plus, Paperclip, X, Image } from 'lucide-react';
 import Navbar from '../components/layout/Navbar';
 import Sidebar from '../components/layout/Sidebar';
 import { useAuth } from '../context/AuthContext';
@@ -179,11 +179,12 @@ interface ChatMessage {
   role: 'user' | 'bot';
   content: string;
   timestamp: Date;
+  imageUrl?: string;        // base64 data URL of attached image
   isAssessment?: boolean;
   assessment?: AssessmentResult;
   isError?: boolean;
   errorType?: '503' | '504' | 'network';
-  retryPayload?: string; // original user message to retry
+  retryPayload?: string;
 }
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
@@ -191,16 +192,26 @@ interface ChatMessage {
 const SymptomCheckerPage: React.FC = () => {
   const { user } = useAuth();
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const WELCOME_MESSAGE: ChatMessage = {
+    id: 'welcome',
+    role: 'bot',
+    content: "Hello! Describe your symptoms and I'll help assess them.\n\nNOT MEDICAL ADVICE. Always consult a doctor.",
+    timestamp: new Date(),
+  };
+
+  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
   const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showEmergencyModal, setShowEmergencyModal] = useState(false);
   const [emergencyData, setEmergencyData] = useState<EmergencyResponse | null>(null);
   const [savedAssessmentId, setSavedAssessmentId] = useState<number | null>(null);
+  const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [attachedImageName, setAttachedImageName] = useState<string>('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -214,25 +225,64 @@ const SymptomCheckerPage: React.FC = () => {
     ]);
   };
 
+  // ── Handle image attachment ───────────────────────────────────────────────
+  const handleImageAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file.');
+      return;
+    }
+    if (file.size > 5_000_000) {
+      alert('Image must be under 5 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setAttachedImage(ev.target?.result as string);
+      setAttachedImageName(file.name);
+    };
+    reader.readAsDataURL(file);
+    // Reset input so same file can be re-selected
+    e.target.value = '';
+  };
+
+  const removeAttachedImage = () => {
+    setAttachedImage(null);
+    setAttachedImageName('');
+  };
+
   const handleSubmit = useCallback(
     async (messageText?: string) => {
       const text = (messageText ?? inputText).trim();
-      if (!text || isLoading) return;
+      if (!text && !attachedImage || isLoading) return;
 
-      // Clear input only when submitting fresh (not a retry)
+      const imageToSend = attachedImage;
+      const displayText = text || '(Image attached)';
+
+      // Clear input and attachment
       if (!messageText) {
         setInputText('');
+        setAttachedImage(null);
+        setAttachedImageName('');
       }
 
-      // Append user message to thread
-      addMessage({ role: 'user', content: text });
+      // Append user message with optional image
+      addMessage({ role: 'user', content: displayText, imageUrl: imageToSend ?? undefined });
       setIsLoading(true);
+
+      // Build the text sent to AI — append image note so AI knows an image was shared
+      const aiText = imageToSend
+        ? `${displayText}\n\n[Patient has attached an image for reference. Please consider this in your assessment.]`
+        : displayText;
 
       try {
         const response: AnalyzeResponse = await analyzeSymptoms(
-          text,
+          aiText,
           sessionId,
-          Number(user?.id ?? 0)
+          Number(user?.id ?? 0),
+          imageToSend,
+          imageToSend ? imageToSend.split(';')[0].split(':')[1] : null
         );
 
         // Emergency path
@@ -286,13 +336,13 @@ const SymptomCheckerPage: React.FC = () => {
           content: errorContent,
           isError: true,
           errorType,
-          retryPayload: text,
+          retryPayload: displayText,
         });
       } finally {
         setIsLoading(false);
       }
     },
-    [inputText, isLoading, sessionId, user?.id]
+    [inputText, attachedImage, isLoading, sessionId, user?.id]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -303,10 +353,12 @@ const SymptomCheckerPage: React.FC = () => {
   };
 
   const handleStartNewChat = () => {
-    setMessages([]);
+    setMessages([WELCOME_MESSAGE]);
     setSessionId(crypto.randomUUID());
     setSavedAssessmentId(null);
     setInputText('');
+    setAttachedImage(null);
+    setAttachedImageName('');
     textareaRef.current?.focus();
   };
 
@@ -381,16 +433,6 @@ const SymptomCheckerPage: React.FC = () => {
 
                 {/* Message thread */}
                 <div className="h-[480px] overflow-y-auto px-4 py-4 flex flex-col space-y-3">
-                  {messages.length === 0 && (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center py-12">
-                      <Brain className="w-12 h-12 text-blue-200 mb-3" />
-                      <p className="text-gray-500 text-sm max-w-xs">
-                        Start by describing your symptoms. The AI will ask a few follow-up
-                        questions before providing an assessment.
-                      </p>
-                    </div>
-                  )}
-
                   {messages.map(msg => (
                     <div
                       key={msg.id}
@@ -400,7 +442,15 @@ const SymptomCheckerPage: React.FC = () => {
                         /* User bubble */
                         <div className="max-w-sm lg:max-w-md">
                           <div className="bg-blue-600 text-white text-sm rounded-2xl rounded-tr-sm px-4 py-2.5 shadow-sm">
-                            {msg.content}
+                            {msg.imageUrl && (
+                              <img
+                                src={msg.imageUrl}
+                                alt="Attached"
+                                className="rounded-lg mb-2 max-h-48 w-full object-cover cursor-pointer"
+                                onClick={() => window.open(msg.imageUrl, '_blank')}
+                              />
+                            )}
+                            {msg.content !== '(Image attached)' && msg.content}
                           </div>
                           <p className="text-xs text-gray-400 mt-1 text-right">
                             {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -467,7 +517,45 @@ const SymptomCheckerPage: React.FC = () => {
 
                 {/* Input area */}
                 <div className="border-t border-gray-200 px-4 py-3 bg-gray-50">
-                  <div className="flex items-end gap-3">
+                  {/* Image preview strip */}
+                  {attachedImage && (
+                    <div className="mb-2 flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+                      <Image className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                      <img
+                        src={attachedImage}
+                        alt="Attached"
+                        className="h-10 w-10 rounded object-cover flex-shrink-0"
+                      />
+                      <span className="text-xs text-gray-600 truncate flex-1">{attachedImageName}</span>
+                      <button
+                        onClick={removeAttachedImage}
+                        className="flex-shrink-0 text-gray-400 hover:text-red-500 transition-colors"
+                        title="Remove image"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="flex items-end gap-2">
+                    {/* Paperclip / attach button */}
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isLoading}
+                      title="Attach an image"
+                      className="flex-shrink-0 p-2.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-40"
+                    >
+                      <Paperclip className="w-5 h-5" />
+                    </button>
+
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleImageAttach}
+                    />
+
                     <textarea
                       ref={textareaRef}
                       value={inputText}
@@ -480,7 +568,7 @@ const SymptomCheckerPage: React.FC = () => {
                     />
                     <button
                       onClick={() => handleSubmit()}
-                      disabled={isLoading || !inputText.trim()}
+                      disabled={isLoading || (!inputText.trim() && !attachedImage)}
                       className="flex-shrink-0 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-lg p-2.5 transition-colors"
                       aria-label="Send message"
                     >

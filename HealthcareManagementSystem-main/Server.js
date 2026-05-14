@@ -18,7 +18,8 @@ const io = new Server(httpServer, {
   }
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(cors());
 
 // Database Configuration
@@ -455,6 +456,13 @@ await appConn.query(`
     // Ignore if already the desired type
   }
 
+  // Add avatar column if it doesn't exist yet
+  try {
+    await appConn.query(`ALTER TABLE users ADD COLUMN avatar MEDIUMTEXT NULL`);
+  } catch (e) {
+    // Column already exists — ignore
+  }
+
   await populateInitialData(appConn);
   await appConn.end();
 
@@ -495,8 +503,77 @@ async function updateAppointmentsTable() {
 }
 
 // WebSocket Connection Handling
+// In-memory map of userId → socketId for video call routing
+const onlineUsers = new Map(); // userId (string) → socketId
+
 io.on('connection', (socket) => {
-  socket.on('disconnect', () => {});
+  // ── Video call signalling ──────────────────────────────────────────────────
+
+  // Register user so we can route calls by userId
+  socket.on('video:register', ({ userId, name, role }) => {
+    const uid = String(userId);
+    onlineUsers.set(uid, socket.id);
+    socket.data.userId = uid;
+    socket.data.name = name;
+    socket.data.role = role;
+    console.log(`[Video] Registered: ${name} (${role}) userId=${uid} socketId=${socket.id}`);
+    console.log(`[Video] Online users: ${JSON.stringify([...onlineUsers.entries()])}`);
+  });
+
+  // Caller → callee: forward offer
+  socket.on('video:call', ({ to, from, offer }) => {
+    const targetSocketId = onlineUsers.get(String(to));
+    console.log(`[Video] Call from userId=${from.id} to userId=${to} → targetSocket=${targetSocketId}`);
+    console.log(`[Video] Online users at call time: ${JSON.stringify([...onlineUsers.entries()])}`);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('video:incoming-call', { from, offer });
+      console.log(`[Video] Forwarded incoming-call to socket ${targetSocketId}`);
+    } else {
+      console.warn(`[Video] Target userId=${to} not found in onlineUsers — call cannot be delivered`);
+      socket.emit('video:call-failed', { reason: 'User is not online' });
+    }
+  });
+
+  // Callee → caller: forward answer
+  socket.on('video:answer', ({ to, answer }) => {
+    const targetSocketId = onlineUsers.get(String(to));
+    console.log(`[Video] Answer from socket ${socket.id} to userId=${to} → targetSocket=${targetSocketId}`);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('video:call-answered', { answer });
+    }
+  });
+
+  // ICE candidate relay (bidirectional)
+  socket.on('video:ice-candidate', ({ to, candidate }) => {
+    const targetSocketId = onlineUsers.get(String(to));
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('video:ice-candidate', { candidate });
+    }
+  });
+
+  // Callee rejects call
+  socket.on('video:reject', ({ to }) => {
+    const targetSocketId = onlineUsers.get(String(to));
+    console.log(`[Video] Reject: to userId=${to} → targetSocket=${targetSocketId}`);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('video:call-rejected');
+    }
+  });
+
+  // Either party ends the call
+  socket.on('video:end', ({ to }) => {
+    const targetSocketId = onlineUsers.get(String(to));
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('video:call-ended');
+    }
+  });
+
+  socket.on('disconnect', () => {
+    if (socket.data.userId) {
+      onlineUsers.delete(socket.data.userId);
+      console.log(`[Video] Disconnected: userId=${socket.data.userId}`);
+    }
+  });
 });
 
 // ==================== AUTHENTICATION ROUTES ====================
@@ -620,6 +697,35 @@ app.delete("/api/profile/:id", (req, res) => {
       if (err) return res.status(500).json({ message: "Error deleting profile" });
       if (results.affectedRows === 0) return res.status(404).json({ message: "User not found" });
       res.status(200).json({ message: "Profile deleted successfully" });
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// ── Avatar upload — accepts base64 data URL in request body ──────────────────
+app.put("/api/profile/:id/avatar", (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { avatar } = req.body;
+
+    if (!userId) return res.status(400).json({ message: "User ID is required" });
+    if (!avatar) return res.status(400).json({ message: "Avatar data is required" });
+
+    // Basic validation — must be a data URL
+    if (!avatar.startsWith('data:image/')) {
+      return res.status(400).json({ message: "Invalid image format" });
+    }
+
+    // Limit size to ~2 MB (base64 ~2.7 MB raw)
+    if (avatar.length > 2_800_000) {
+      return res.status(413).json({ message: "Image too large. Please use an image under 2 MB." });
+    }
+
+    db.query("UPDATE users SET avatar = ? WHERE id = ?", [avatar, userId], (err, results) => {
+      if (err) return res.status(500).json({ message: "Error saving avatar" });
+      if (results.affectedRows === 0) return res.status(404).json({ message: "User not found" });
+      res.status(200).json({ message: "Avatar updated successfully", avatar });
     });
   } catch (error) {
     res.status(500).json({ message: "Internal server error" });
@@ -1008,9 +1114,17 @@ app.post('/api/messages', (req, res) => {
     if (err) return res.status(500).json({ message: 'Failed to create message' });
     
     const newMessageId = results.insertId;
-    db.query('SELECT * FROM messages WHERE id = ?', [newMessageId], (err, messageResults) => {
+    db.query('SELECT m.*, u.name as senderName FROM messages m LEFT JOIN users u ON m.senderId = u.id WHERE m.id = ?', [newMessageId], (err, messageResults) => {
       if (err) return res.status(500).json({ message: 'Message created but failed to fetch details' });
-      res.status(201).json(messageResults[0]);
+      const newMessage = messageResults[0];
+
+      // Push real-time notification to the recipient if they are online
+      const recipientSocketId = onlineUsers.get(String(receiverId));
+      if (recipientSocketId) {
+        io.to(recipientSocketId).emit('message:new', newMessage);
+      }
+
+      res.status(201).json(newMessage);
     });
   });
 });
@@ -1683,6 +1797,109 @@ app.delete('/api/prescriptions/:id', (req, res) => {
 // ==================== SYMCHECK AI ROUTES ====================
 
 /**
+ * Calls Claude claude-3-haiku-20240307 with an image + text message.
+ * Returns a parsed response object in the same shape as the Ollama response.
+ */
+async function callClaudeWithImage(conversationText, imageBase64, mimeType, isDiagnosisPhase) {
+  const apiKey = process.env.CLAUDE_API_KEY;
+  if (!apiKey || apiKey === 'your_claude_api_key_here') {
+    throw new Error('CLAUDE_API_KEY not configured');
+  }
+
+  // Strip the data URL prefix to get raw base64
+  const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+  const imageMime = mimeType || 'image/jpeg';
+
+  let systemPrompt;
+  if (isDiagnosisPhase) {
+    systemPrompt = `You are a medical AI assistant. The patient has shared an image along with their symptoms. 
+Analyze both the image and the conversation to provide a structured diagnosis.
+Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
+{
+  "diagnosis_ready": true,
+  "diagnosis": "Brief diagnosis name",
+  "urgency": "NON-URGENT",
+  "confidence": 75,
+  "home_remedies": ["remedy 1", "remedy 2", "remedy 3"],
+  "recommended_actions": ["action 1", "action 2"],
+  "response": "NOT MEDICAL ADVICE — FOR INFORMATIONAL PURPOSES ONLY\\n\\nPossible Diagnosis: [diagnosis]\\n\\nPlease consult a healthcare professional."
+}
+urgency must be one of: EMERGENCY, URGENT, NON-URGENT
+confidence must be a number between 0 and 100`;
+  } else {
+    systemPrompt = `You are a medical AI assistant conducting a symptom assessment. The patient has shared an image.
+Look at the image carefully and ask ONE focused follow-up question about what you observe.
+Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
+{
+  "diagnosis_ready": false,
+  "response": "Your single follow-up question here referencing what you see in the image",
+  "confidence": 30,
+  "urgency": ""
+}`;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+  let fetchResponse;
+  try {
+    fetchResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: imageMime,
+                  data: base64Data,
+                },
+              },
+              {
+                type: 'text',
+                text: conversationText,
+              },
+            ],
+          },
+        ],
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!fetchResponse.ok) {
+    const errBody = await fetchResponse.text();
+    console.error('Claude API error:', fetchResponse.status, errBody);
+    throw new Error(`Claude API returned ${fetchResponse.status}`);
+  }
+
+  const claudeBody = await fetchResponse.json();
+  const rawText = claudeBody.content?.[0]?.text ?? '';
+
+  // Parse JSON from Claude response
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    throw new Error('Could not parse Claude response as JSON');
+  }
+}
+
+/**
  * POST /api/symcheck/analyze
  *
  * Ollama proxy with emergency detection and in-memory session management.
@@ -1698,11 +1915,13 @@ app.delete('/api/prescriptions/:id', (req, res) => {
  *  5. Return HTTP 503 if Ollama is unreachable, HTTP 504 on timeout.
  */
 app.post('/api/symcheck/analyze', async (req, res) => {
-  const { message, sessionId, userId } = req.body;
+  const { message, sessionId, userId, imageData, imageMimeType } = req.body;
 
   if (!message || !sessionId || !userId) {
     return res.status(400).json({ message: 'Missing required fields: message, sessionId, userId' });
   }
+
+  const hasImage = !!(imageData && imageData.startsWith('data:image/'));
 
   // ── Step 1: Emergency detection ──────────────────────────────────────────
   const emergencyResult = checkEmergency(message);
@@ -1758,9 +1977,12 @@ app.post('/api/symcheck/analyze', async (req, res) => {
   }
   const session = activeSymcheckSessions.get(sessionId);
 
-  // ── Step 3: Append user message; record first message as symptoms ─────────
+  // ── Step 3: Append user message; record symptoms from first substantive message ─
   session.conversation.push({ role: 'user', content: message });
-  if (!session.symptoms) {
+  // Only store as symptoms if the message looks like actual symptoms (not a greeting).
+  // We consider a message substantive if it's longer than 10 chars and not a common greeting.
+  const greetingPattern = /^(hi|hello|hey|good\s*(morning|afternoon|evening)|howdy|greetings)[^a-z]*$/i;
+  if (!session.symptoms && message.trim().length > 10 && !greetingPattern.test(message.trim())) {
     session.symptoms = message;
   }
 
@@ -1808,55 +2030,74 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
 }`;
   }
 
-  // ── Step 5: Call Ollama with a 60-second timeout ──────────────────────────
+  // ── Step 5: Call AI — Claude (image) or Ollama (text only) ──────────────
   let ollamaResponse;
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
-
-    let fetchResponse;
-    try {
-      fetchResponse = await fetch('http://localhost:11434/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'gemma2:2b',
-          prompt: ollamaPrompt,
-          stream: false,
-          format: 'json'
-        }),
-        signal: controller.signal
-      });
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    if (!fetchResponse.ok) {
-      console.error(`SymCheck: Ollama returned HTTP ${fetchResponse.status}`);
-      return res.status(503).json({
-        message: 'The AI service is currently unavailable. Please try again in a moment.'
-      });
-    }
-
-    const rawBody = await fetchResponse.json();
-    // Ollama wraps the model output in a "response" field
-    const modelOutput = rawBody.response || rawBody;
-
-    if (typeof modelOutput === 'string') {
+    if (hasImage) {
+      // ── Claude path — image analysis ─────────────────────────────────────
+      console.log('SymCheck: Routing to Claude (image attached)');
       try {
-        ollamaResponse = JSON.parse(modelOutput);
-      } catch {
-        // Attempt to extract JSON from the string if it contains extra text
-        const jsonMatch = modelOutput.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          ollamaResponse = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error('Could not parse Ollama model output as JSON');
-        }
+        ollamaResponse = await callClaudeWithImage(
+          conversationText,
+          imageData,
+          imageMimeType || 'image/jpeg',
+          isDiagnosisPhase
+        );
+      } catch (claudeErr) {
+        console.error('SymCheck: Claude error:', claudeErr.message);
+        return res.status(503).json({
+          message: `Image analysis unavailable: ${claudeErr.message}. Please describe your symptoms in text.`
+        });
       }
     } else {
-      ollamaResponse = modelOutput;
+      // ── Ollama path — text only ───────────────────────────────────────────
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+      let fetchResponse;
+      try {
+        fetchResponse = await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'gemma2:2b',
+            prompt: ollamaPrompt,
+            stream: false,
+            format: 'json'
+          }),
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (!fetchResponse.ok) {
+        console.error(`SymCheck: Ollama returned HTTP ${fetchResponse.status}`);
+        return res.status(503).json({
+          message: 'The AI service is currently unavailable. Please try again in a moment.'
+        });
+      }
     }
+
+      const rawBody = await fetchResponse.json();
+      // Ollama wraps the model output in a "response" field
+      const modelOutput = rawBody.response || rawBody;
+
+      if (typeof modelOutput === 'string') {
+        try {
+          ollamaResponse = JSON.parse(modelOutput);
+        } catch {
+          const jsonMatch = modelOutput.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            ollamaResponse = JSON.parse(jsonMatch[0]);
+          } else {
+            throw new Error('Could not parse Ollama model output as JSON');
+          }
+        }
+      } else {
+        ollamaResponse = modelOutput;
+      }
+    } // end Ollama else block
   } catch (err) {
     if (err.name === 'AbortError') {
       console.error('SymCheck: Ollama request timed out after 60 s');
@@ -1864,7 +2105,6 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
         message: 'The AI took too long to respond. Please try again.'
       });
     }
-    // Network error / Ollama not running
     console.error('SymCheck: Could not reach Ollama:', err.message);
     return res.status(503).json({
       message: 'The AI service is currently unavailable. Please try again in a moment.'
@@ -1896,7 +2136,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
         [
           session.userId,
           sessionId,
-          session.symptoms,
+          session.symptoms || session.conversation.find(m => m.role === 'user')?.content || 'No symptoms recorded',
           JSON.stringify(session.conversation),
           ollamaResponse.diagnosis || 'Assessment complete',
           urgency,

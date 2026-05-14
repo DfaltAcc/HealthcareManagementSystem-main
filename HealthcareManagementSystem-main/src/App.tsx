@@ -3,7 +3,10 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { WebSocketProvider } from './context/WebSocketContext';
 import { NotificationProvider } from './context/NotificationContext';
+import { VideoCallProvider } from './context/VideoCallContext';
 import ProtectedRoute from './components/layout/ProtectedRoute';
+import IncomingCallOverlay from './components/video/IncomingCallOverlay';
+import { MessageNotificationProvider } from './context/MessageNotificationContext';
 
 // Pages
 import HomePage from './pages/HomePage';
@@ -27,6 +30,8 @@ import EditAppointmentPage from './pages/EditAppointmentPage';
 import SymptomCheckerPage from './pages/SymptomCheckerPage';
 import SymptomCheckerHistoryPage from './pages/SymptomCheckerHistoryPage';
 import AIAnalyticsDashboardPage from './pages/AIAnalyticsDashboardPage';
+import VideoConferencePage from './pages/VideoConferencePage';
+import VideoCallPage from './pages/VideoCallPage';
 
 // Root redirect component
 const RootRedirect: React.FC = () => {
@@ -61,6 +66,9 @@ const App: React.FC = () => {
       <WebSocketProvider>
         <NotificationProvider>
           <Router>
+            <VideoCallProvider>
+              <MessageNotificationProvider>
+              <IncomingCallOverlay />
             <Routes>
               {/* Public Routes */}
               <Route path="/" element={<HomePage />} />
@@ -231,9 +239,30 @@ const App: React.FC = () => {
                 }
               />
 
+              {/* Video Conference */}
+              <Route
+                path="/video-conference"
+                element={
+                  <ProtectedRoute allowedRoles={['patient', 'doctor', 'admin']}>
+                    <VideoConferencePage />
+                  </ProtectedRoute>
+                }
+              />
+              {/* Video Call — full screen, no sidebar */}
+              <Route
+                path="/video-call"
+                element={
+                  <ProtectedRoute allowedRoles={['patient', 'doctor', 'admin']}>
+                    <VideoCallPage />
+                  </ProtectedRoute>
+                }
+              />
+
               {/* Catch all route */}
               <Route path="*" element={<Navigate to="/" />} />
             </Routes>
+            </MessageNotificationProvider>
+            </VideoCallProvider>
           </Router>
         </NotificationProvider>
       </WebSocketProvider>
